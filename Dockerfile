@@ -45,8 +45,8 @@ RUN pip install torch torchvision torchaudio --index-url https://download.pytorc
 # Install xgrammar from PyPI (not in cu130 index)
 RUN pip install xgrammar
 
-# Install flashinfer using --pre flag for pre-release versions
-RUN pip install flashinfer-python --pre
+# Pin flashinfer to 0.6.6 to match vllm v0.19.1's requirements/cuda.txt
+RUN pip install flashinfer-python==0.6.6 flashinfer-cubin==0.6.6
 
 # Pin PyTorch CUDA version - flashinfer and vLLM pip install pull torch from
 # PyPI (CPU-only). Setting extra-index-url ensures all subsequent pip installs
@@ -56,9 +56,12 @@ ENV PIP_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cu130
 # Reinstall PyTorch CUDA after flashinfer (which just downgraded it)
 RUN pip install torch==2.10.0+cu130 torchvision==0.25.0+cu130 torchaudio==2.10.0+cu130
 
-# Clone vLLM (pinned to known-good revision for reproducible builds)
+# Clone vLLM at v0.19.1 (bumped from Avarok's 3b30e6150 Feb-2026 pin so
+# transformers>=5 is supported for Qwen3.6 family models).
+# Upstream v0.19.1 already includes sm_121 in all CMake arch lists, so many
+# of Avarok's CMake sed patches below will be idempotent no-ops.
 RUN git clone https://github.com/vllm-project/vllm.git && \
-    cd vllm && git checkout 3b30e6150777de549b11f67dde3ecc0d3b1f3f50
+    cd vllm && git checkout v0.19.1
 WORKDIR /app/vllm
 
 # Prepare for existing torch
@@ -393,15 +396,15 @@ WORKDIR /app/vllm
 EXPOSE 8888 6379
 
 # Version metadata
-LABEL version="22"
-LABEL build_date="2026-02-18"
-LABEL vllm_source="3b30e6150-patched"
+LABEL version="22-v0.19.1-port"
+LABEL build_date="2026-04-25"
+LABEL vllm_source="v0.19.1-avarok-patched"
 LABEL pytorch_version="stable-cu130"
 LABEL compute_capability="12.1a-gb10"
 LABEL quantization_support="fp8-nvfp4"
 LABEL sm121_fp8_backend="torch-scaled-mm-fallback"
 LABEL moe_config="gb10-custom-tuned"
-LABEL maintainer="avarok"
+LABEL maintainer="adeel (avarok-port)"
 
 # Healthcheck
 HEALTHCHECK --interval=30s --timeout=10s --start-period=300s --retries=3 \

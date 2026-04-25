@@ -111,6 +111,24 @@ RUN if [ -f CMakeLists.txt ]; then \
 fi
 
 # ============================================================================
+# Disable qutlass build on sm_121 (port: vllm v0.19.1)
+# ============================================================================
+# v0.19.1 added QuTLASS (github.com/IST-DASLab/qutlass) as an external fetched
+# dep providing fast MXFP4/NVFP4 quant kernels. Its sources use the PTX
+# instruction `cvt.e2m1x2`, which CUDA 13.0 ptxas refuses to emit for
+# `sm_121` ("Instruction 'cvt with .e2m1x2' not supported on .target 'sm_121'"),
+# even with `-arch=sm_121a`. Force QUTLASS_ARCHS to empty so the if-guard at
+# qutlass.cmake:40 fails and the file falls through to the "Skipping build"
+# branch. vLLM's own NVFP4 path (with Avarok's software-E2M1 nvfp4_utils.cuh
+# patch applied below) covers the lost functionality.
+# ============================================================================
+RUN if [ -f cmake/external_projects/qutlass.cmake ]; then \
+      sed -i 's|cuda_archs_loose_intersection(QUTLASS_ARCHS "10\.0f;12\.0f" "${CUDA_ARCHS}")|set(QUTLASS_ARCHS "")  # sm_121 port: qutlass FP4 kernels use cvt.e2m1x2 which is unsupported by ptxas for sm_121|' cmake/external_projects/qutlass.cmake && \
+      sed -i 's|cuda_archs_loose_intersection(QUTLASS_ARCHS "12\.0a;12\.1a;10\.0a;10\.3a" "${CUDA_ARCHS}")|set(QUTLASS_ARCHS "")  # sm_121 port: see comment above|' cmake/external_projects/qutlass.cmake && \
+      echo "qutlass.cmake after patch:" && grep -n "QUTLASS_ARCHS" cmake/external_projects/qutlass.cmake | head -10; \
+    fi
+
+# ============================================================================
 # Integrate Native SM_121 Kernels for GB10 (NO FALLBACKS)
 # ============================================================================
 # Adds GB10-specific CUTLASS kernels optimized for SM_121:

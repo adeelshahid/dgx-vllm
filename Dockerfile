@@ -422,7 +422,7 @@ LABEL compute_capability="12.1a-gb10"
 LABEL quantization_support="fp8-nvfp4"
 LABEL sm121_fp8_backend="torch-scaled-mm-fallback"
 LABEL moe_config="gb10-custom-tuned"
-LABEL maintainer="adeel (avarok-port)"
+LABEL maintainer="avarok"
 
 # Healthcheck
 HEALTHCHECK --interval=30s --timeout=10s --start-period=300s --retries=3 \

@@ -45,30 +45,40 @@ RUN pip install torch torchvision torchaudio --index-url https://download.pytorc
 # Install xgrammar from PyPI (not in cu130 index)
 RUN pip install xgrammar
 
-# Pin flashinfer to 0.6.6 to match vllm v0.19.1's requirements/cuda.txt
-RUN pip install flashinfer-python==0.6.6 flashinfer-cubin==0.6.6
+# Pin flashinfer to 0.6.7 to match vllm v0.20.0's requirements/cuda.txt
+RUN pip install flashinfer-python==0.6.7 flashinfer-cubin==0.6.7
 
 # Pin PyTorch CUDA version - flashinfer and vLLM pip install pull torch from
 # PyPI (CPU-only). Setting extra-index-url ensures all subsequent pip installs
 # resolve torch from the cu130 index instead of defaulting to CPU.
 ENV PIP_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cu130
 
-# Reinstall PyTorch CUDA after flashinfer (which just downgraded it)
-RUN pip install torch==2.10.0+cu130 torchvision==0.25.0+cu130 torchaudio==2.10.0+cu130
+# Reinstall PyTorch CUDA after flashinfer (which just downgraded it).
+# vllm v0.20.0 requires torch 2.11.x; the libtorch_stable extension targets
+# TORCH_TARGET_VERSION=2.10 ABI so 2.11 is forward-compatible.
+RUN pip install torch==2.11.0+cu130 torchvision==0.26.0+cu130 torchaudio==2.11.0+cu130
 
-# Clone vLLM at v0.19.1 (bumped from Avarok's 3b30e6150 Feb-2026 pin so
-# transformers>=5 is supported for Qwen3.6 family models).
-# Upstream v0.19.1 already includes sm_121 in all CMake arch lists, so many
-# of Avarok's CMake sed patches below will be idempotent no-ops.
+# Clone vLLM at v0.20.0 (bumped from v0.19.1; vLLM moved CUTLASS scaled_mm /
+# NVFP4 kernels from csrc/quantization/* into csrc/libtorch_stable/quantization/*
+# and renamed the build target from _C to _C_stable_libtorch — patch scripts
+# below have been updated accordingly).
 RUN git clone https://github.com/vllm-project/vllm.git && \
-    cd vllm && git checkout v0.19.1
+    cd vllm && git checkout v0.20.0
 WORKDIR /app/vllm
 
 # Prepare for existing torch
 RUN python3 use_existing_torch.py
 
-# Install build requirements
-RUN pip install -r requirements/build.txt
+# Install build requirements. v0.20.0 reorganized requirements into a per-target
+# subdirectory: build.txt -> build/cuda.txt. Fall through to the legacy path if
+# building against an older vllm tag.
+RUN if [ -f requirements/build/cuda.txt ]; then \
+      pip install -r requirements/build/cuda.txt; \
+    elif [ -f requirements/build.txt ]; then \
+      pip install -r requirements/build.txt; \
+    else \
+      echo "ERROR: no build requirements file found" && exit 1; \
+    fi
 
 # ============================================================================
 # Install FP4 Type Definitions for CUDA 13.0
@@ -111,7 +121,7 @@ RUN if [ -f CMakeLists.txt ]; then \
 fi
 
 # ============================================================================
-# Disable qutlass build on sm_121 (port: vllm v0.19.1)
+# Disable qutlass build on sm_121 (port: vllm v0.20.0)
 # ============================================================================
 # v0.19.1 added QuTLASS (github.com/IST-DASLab/qutlass) as an external fetched
 # dep providing fast MXFP4/NVFP4 quant kernels. Its sources use the PTX
@@ -326,16 +336,22 @@ ENV TORCH_NCCL_BLOCKING_WAIT=1
 # Install vLLM with local build (this takes a while)
 # Pin torch to cu130 via constraints to prevent pip from downgrading to CPU version.
 # Without this, vLLM's dependency resolution replaces torch+cu130 with torch (CPU).
-RUN echo "torch==2.10.0+cu130" > /tmp/constraints.txt && \
-    echo "torchvision==0.25.0+cu130" >> /tmp/constraints.txt && \
-    echo "torchaudio==2.10.0+cu130" >> /tmp/constraints.txt && \
+#
+# fastsafetensors==0.3 (pulled in via vllm's requirements/cuda.txt) ships only
+# an sdist for ARM64+py3.12 and needs pybind11 at build time. Because we use
+# --no-build-isolation, pip won't fetch pybind11 itself — install it eagerly so
+# the fastsafetensors source build succeeds.
+RUN pip install pybind11
+RUN echo "torch==2.11.0+cu130" > /tmp/constraints.txt && \
+    echo "torchvision==0.26.0+cu130" >> /tmp/constraints.txt && \
+    echo "torchaudio==2.11.0+cu130" >> /tmp/constraints.txt && \
     PIP_CONSTRAINT=/tmp/constraints.txt pip install --no-build-isolation -e . -v --pre
 
 # Fix PyTorch CUDA: vLLM pip install pulls torch from PyPI (CPU-only) despite
 # PIP_EXTRA_INDEX_URL. Force reinstall cu130 version. The CUDA extensions were
 # already compiled against CUDA torch (from our pre-build install), so the .so
 # files are compatible - only the Python package metadata needs fixing.
-RUN pip install torch==2.10.0+cu130 torchvision==0.25.0+cu130 torchaudio==2.10.0+cu130 \
+RUN pip install torch==2.11.0+cu130 torchvision==0.26.0+cu130 torchaudio==2.11.0+cu130 \
     --index-url https://download.pytorch.org/whl/cu130 --force-reinstall --no-deps
 
 # ============================================================================
@@ -414,10 +430,10 @@ WORKDIR /app/vllm
 EXPOSE 8888 6379
 
 # Version metadata
-LABEL version="22-v0.19.1-port"
-LABEL build_date="2026-04-25"
-LABEL vllm_source="v0.19.1-avarok-patched"
-LABEL pytorch_version="stable-cu130"
+LABEL version="23-v0.20.0-port"
+LABEL build_date="2026-04-28"
+LABEL vllm_source="v0.20.0-avarok-patched"
+LABEL pytorch_version="2.11.0-cu130"
 LABEL compute_capability="12.1a-gb10"
 LABEL quantization_support="fp8-nvfp4"
 LABEL sm121_fp8_backend="torch-scaled-mm-fallback"

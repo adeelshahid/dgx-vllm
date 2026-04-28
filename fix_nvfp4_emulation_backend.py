@@ -21,7 +21,22 @@ path = "/app/vllm/vllm/model_executor/layers/quantization/utils/nvfp4_emulation_
 with open(path) as f:
     content = f.read()
 
-old_func = '''def run_nvfp4_emulations(
+# Two upstream signatures we know about:
+#   v0.19.1: positional (x, input_global_scale, weight, weight_scale_swizzled,
+#            weight_global_scale); body calls dequantize_to_dtype(..., x.device,
+#            group_size).
+#   v0.20.0: same positional args + `swizzle: bool | None = True`; body calls
+#            dequantize_to_dtype(..., output_dtype, group_size, swizzle=swizzle)
+#            (drops the x.device arg, adds swizzle).
+#
+# For both, we replace the function body with a version that:
+#   1. Re-inverts weight_global_scale if compressed-tensors stored it as 1/gs
+#      (a real-world bug we hit on RedHatAI NVFP4 checkpoints).
+#   2. Builds the dequantized weight directly from the linear scales, since
+#      EMULATION-backend checkpoints store scales unswizzled even though the
+#      tensor name still has "_swizzled".
+
+OLD_V0_19_1 = '''def run_nvfp4_emulations(
     x: torch.Tensor,
     input_global_scale: torch.Tensor,
     weight: torch.Tensor,
@@ -57,12 +72,81 @@ old_func = '''def run_nvfp4_emulations(
     del w_dq, x_dq
     return out'''
 
-new_func = '''def run_nvfp4_emulations(
+OLD_V0_20_0 = '''def run_nvfp4_emulations(
     x: torch.Tensor,
     input_global_scale: torch.Tensor,
     weight: torch.Tensor,
     weight_scale_swizzled: torch.Tensor,
     weight_global_scale: torch.Tensor,
+    swizzle: bool | None = True,
+):
+    group_size = 16
+    x_m, x_k = x.shape
+    output_dtype = x.dtype
+
+    # quantize input to (FP4 and interleaved block scale)
+    x_fp4, x_blockscale = ref_nvfp4_quant(x, input_global_scale, group_size)
+
+    # dequantize input
+    x_fp4 = x_fp4.reshape(x_m, x_k // group_size, group_size)
+    x_blockscale = x_blockscale.unsqueeze(-1) / input_global_scale
+    x_dq = (x_fp4 * x_blockscale).reshape(x_m, x_k).to(output_dtype)
+    del x_fp4, x_blockscale
+
+    # dequantize weight
+    w_fp4 = weight.data.view(torch.uint8)
+    w_dq = dequantize_to_dtype(
+        w_fp4,
+        weight_scale_swizzled.data,
+        weight_global_scale,
+        output_dtype,
+        group_size,
+        swizzle=swizzle,
+    )
+
+    # matmul
+    out = torch.matmul(x_dq, w_dq.t())
+    del w_dq, x_dq
+    return out'''
+
+# Yet another body shape. Upstream v0.20.0 (post-tag-rewrite, commit 88d34c640)
+# refactored the input quant/dequant into a single ref_nvfp4_quant_dequant call
+# and dropped the manual `del` cleanup. Same args, same swizzle parameter.
+OLD_V0_20_0_REFACTOR = '''def run_nvfp4_emulations(
+    x: torch.Tensor,
+    input_global_scale: torch.Tensor,
+    weight: torch.Tensor,
+    weight_scale_swizzled: torch.Tensor,
+    weight_global_scale: torch.Tensor,
+    swizzle: bool | None = True,
+):
+    output_dtype = x.dtype
+    group_size = 16
+
+    x_dq, _ = ref_nvfp4_quant_dequant(x, input_global_scale, block_size=group_size)
+
+    # dequantize weight
+    w_fp4 = weight.data.view(torch.uint8)
+    w_dq = dequantize_to_dtype(
+        w_fp4,
+        weight_scale_swizzled.data,
+        weight_global_scale,
+        output_dtype,
+        group_size,
+        swizzle=swizzle,
+    )
+
+    # matmul
+    out = torch.matmul(x_dq, w_dq.t())
+    return out'''
+
+NEW_V0_20_0 = '''def run_nvfp4_emulations(
+    x: torch.Tensor,
+    input_global_scale: torch.Tensor,
+    weight: torch.Tensor,
+    weight_scale_swizzled: torch.Tensor,
+    weight_global_scale: torch.Tensor,
+    swizzle: bool | None = True,
 ):
     group_size = 16
     x_m, x_k = x.shape
@@ -101,15 +185,35 @@ new_func = '''def run_nvfp4_emulations(
     del w_dq, x_dq
     return out'''
 
-if old_func in content:
-    content = content.replace(old_func, new_func)
+# Sentinel kept by the patch so we can detect "already-patched" idempotently.
+PATCH_SENTINEL = "# Bug 1: Weight scales are LINEAR (not swizzled) in EMULATION mode"
+
+if PATCH_SENTINEL in content:
+    print("Already patched (sentinel present)")
+elif OLD_V0_20_0_REFACTOR in content:
+    content = content.replace(OLD_V0_20_0_REFACTOR, NEW_V0_20_0)
     with open(path, 'w') as f:
         f.write(content)
-    print("Fix applied: EMULATION backend weight dequantization (linear scales + global scale)")
+    print("Fix applied to v0.20.0 (refactored) signature: EMULATION backend weight dequantization")
+elif OLD_V0_20_0 in content:
+    content = content.replace(OLD_V0_20_0, NEW_V0_20_0)
+    with open(path, 'w') as f:
+        f.write(content)
+    print("Fix applied to v0.20.0 signature: EMULATION backend weight dequantization")
+elif OLD_V0_19_1 in content:
+    # Use the old NEW string (without swizzle) for v0.19.x
+    NEW_V0_19_1 = NEW_V0_20_0.replace(
+        "    weight_global_scale: torch.Tensor,\n    swizzle: bool | None = True,\n",
+        "    weight_global_scale: torch.Tensor,\n",
+    )
+    content = content.replace(OLD_V0_19_1, NEW_V0_19_1)
+    with open(path, 'w') as f:
+        f.write(content)
+    print("Fix applied to v0.19.x signature: EMULATION backend weight dequantization")
 else:
-    print("ERROR: Could not find run_nvfp4_emulations pattern")
+    print("ERROR: Could not find run_nvfp4_emulations in any known form (v0.19.1, v0.20.0, v0.20.0-refactor)")
     idx = content.find('def run_nvfp4_emulations')
     if idx >= 0:
         print("Current code starts with:")
-        print(content[idx:idx+300])
+        print(content[idx:idx + 600])
     exit(1)

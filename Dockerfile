@@ -45,7 +45,7 @@ RUN pip install torch torchvision torchaudio --index-url https://download.pytorc
 # Install xgrammar from PyPI (not in cu130 index)
 RUN pip install xgrammar
 
-# Pin flashinfer to 0.6.7 to match vllm v0.20.0's requirements/cuda.txt
+# Pin flashinfer to 0.6.7 to match vllm v0.20.1's requirements/cuda.txt
 RUN pip install flashinfer-python==0.6.7 flashinfer-cubin==0.6.7
 
 # Pin PyTorch CUDA version - flashinfer and vLLM pip install pull torch from
@@ -54,24 +54,23 @@ RUN pip install flashinfer-python==0.6.7 flashinfer-cubin==0.6.7
 ENV PIP_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cu130
 
 # Reinstall PyTorch CUDA after flashinfer (which just downgraded it).
-# vllm v0.20.0 requires torch 2.11.x; the libtorch_stable extension targets
+# vllm v0.20.1 requires torch 2.11.x; the libtorch_stable extension targets
 # TORCH_TARGET_VERSION=2.10 ABI so 2.11 is forward-compatible.
 RUN pip install torch==2.11.0+cu130 torchvision==0.26.0+cu130 torchaudio==2.11.0+cu130
 
-# Clone vLLM at v0.20.0 (bumped from v0.19.1; vLLM moved CUTLASS scaled_mm /
-# NVFP4 kernels from csrc/quantization/* into csrc/libtorch_stable/quantization/*
-# and renamed the build target from _C to _C_stable_libtorch — patch scripts
-# below have been updated accordingly).
+# Clone vLLM at v0.20.1 (point release on top of v0.20.0; touches DeepseekV4,
+# Bailing MoE, topk and tool-parser code — none of which overlap with our
+# SM_121 / NVFP4 / FP8 patch surface, so all existing patches apply unchanged).
 RUN git clone https://github.com/vllm-project/vllm.git && \
-    cd vllm && git checkout v0.20.0
+    cd vllm && git checkout v0.20.1
 WORKDIR /app/vllm
 
 # Prepare for existing torch
 RUN python3 use_existing_torch.py
 
-# Install build requirements. v0.20.0 reorganized requirements into a per-target
-# subdirectory: build.txt -> build/cuda.txt. Fall through to the legacy path if
-# building against an older vllm tag.
+# Install build requirements. v0.20.x uses per-target subdirectory layout:
+# build.txt -> build/cuda.txt. Fall through to the legacy path if building
+# against an older vllm tag.
 RUN if [ -f requirements/build/cuda.txt ]; then \
       pip install -r requirements/build/cuda.txt; \
     elif [ -f requirements/build.txt ]; then \
@@ -121,7 +120,7 @@ RUN if [ -f CMakeLists.txt ]; then \
 fi
 
 # ============================================================================
-# Disable qutlass build on sm_121 (port: vllm v0.20.0)
+# Disable qutlass build on sm_121 (port: vllm v0.20.1)
 # ============================================================================
 # v0.19.1 added QuTLASS (github.com/IST-DASLab/qutlass) as an external fetched
 # dep providing fast MXFP4/NVFP4 quant kernels. Its sources use the PTX
@@ -430,9 +429,9 @@ WORKDIR /app/vllm
 EXPOSE 8888 6379
 
 # Version metadata
-LABEL version="23-v0.20.0-port"
-LABEL build_date="2026-04-28"
-LABEL vllm_source="v0.20.0-avarok-patched"
+LABEL version="24-v0.20.1-port"
+LABEL build_date="2026-05-07"
+LABEL vllm_source="v0.20.1-avarok-patched"
 LABEL pytorch_version="2.11.0-cu130"
 LABEL compute_capability="12.1a-gb10"
 LABEL quantization_support="fp8-nvfp4"

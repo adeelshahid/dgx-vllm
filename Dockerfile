@@ -45,8 +45,9 @@ RUN pip install torch torchvision torchaudio --index-url https://download.pytorc
 # Install xgrammar from PyPI (not in cu130 index)
 RUN pip install xgrammar
 
-# Pin flashinfer to 0.6.7 (vllm v0.20.2 pins 0.6.8.post1 in requirements but
-# 0.6.7 is what's been validated end-to-end on sm_121 with our JIT patches).
+# Pin flashinfer to 0.6.7 (vllm v0.21.0's requirements may pin a newer
+# flashinfer but 0.6.7 is what's been validated end-to-end on sm_121 with
+# our JIT patches).
 RUN pip install flashinfer-python==0.6.7 flashinfer-cubin==0.6.7
 
 # Pin PyTorch CUDA version - flashinfer and vLLM pip install pull torch from
@@ -55,16 +56,19 @@ RUN pip install flashinfer-python==0.6.7 flashinfer-cubin==0.6.7
 ENV PIP_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cu130
 
 # Reinstall PyTorch CUDA after flashinfer (which just downgraded it).
-# vllm v0.20.2 requires torch 2.11.x; the libtorch_stable extension targets
+# vllm v0.21.0 requires torch 2.11.x; the libtorch_stable extension targets
 # TORCH_TARGET_VERSION=2.10 ABI so 2.11 is forward-compatible.
 RUN pip install torch==2.11.0+cu130 torchvision==0.26.0+cu130 torchaudio==2.11.0+cu130
 
-# Clone vLLM at v0.20.2 (bugfix release on top of v0.20.1; touches topk.cu,
-# DeepseekV4 ops, MoE runner, KV cache and Qwen3-VL — none of which overlap
-# with our SM_121 / NVFP4 / FP8 patch surface, so all existing patches apply
-# unchanged).
+# Clone vLLM at v0.21.0. Changes vs v0.20.2 do not overlap our SM_121 / NVFP4 /
+# FP8 patch surface: CMakeLists.txt SCALED_MM_ARCHS / MLA_ARCHS /
+# CUTLASS_MOE_DATA_ARCHS / CUDA_SUPPORTED_ARCHS sed anchors all still match,
+# qutlass.cmake is unchanged, scaled_mm_entry.cu / nvfp4_utils.cuh /
+# cutlass.py FP8 dispatch anchors are present. Notable upstream change: C++
+# standard bumped to C++20 (CMAKE_CXX_STANDARD / CMAKE_CUDA_STANDARD); our
+# custom .cu files are C++17 and forward-compatible.
 RUN git clone https://github.com/vllm-project/vllm.git && \
-    cd vllm && git checkout v0.20.2
+    cd vllm && git checkout v0.21.0
 WORKDIR /app/vllm
 
 # Prepare for existing torch
@@ -122,7 +126,7 @@ RUN if [ -f CMakeLists.txt ]; then \
 fi
 
 # ============================================================================
-# Disable qutlass build on sm_121 (port: vllm v0.20.2)
+# Disable qutlass build on sm_121 (port: vllm v0.21.0)
 # ============================================================================
 # v0.19.1 added QuTLASS (github.com/IST-DASLab/qutlass) as an external fetched
 # dep providing fast MXFP4/NVFP4 quant kernels. Its sources use the PTX
@@ -431,9 +435,9 @@ WORKDIR /app/vllm
 EXPOSE 8888 6379
 
 # Version metadata
-LABEL version="25-v0.20.2-port"
-LABEL build_date="2026-05-15"
-LABEL vllm_source="v0.20.2-avarok-patched"
+LABEL version="26-v0.21.0-port"
+LABEL build_date="2026-05-19"
+LABEL vllm_source="v0.21.0-avarok-patched"
 LABEL pytorch_version="2.11.0-cu130"
 LABEL compute_capability="12.1a-gb10"
 LABEL quantization_support="fp8-nvfp4"

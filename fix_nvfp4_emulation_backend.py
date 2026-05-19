@@ -140,6 +140,38 @@ OLD_V0_20_0_REFACTOR = '''def run_nvfp4_emulations(
     out = torch.matmul(x_dq, w_dq.t())
     return out'''
 
+# vllm v0.21.0: ref_nvfp4_quant_dequant now returns a single tensor (not a
+# tuple), so the unpacking on the input quant/dequant line collapsed from
+# `x_dq, _ = ref_nvfp4_quant_dequant(...)` to `x_dq = ref_nvfp4_quant_dequant(...)`.
+# Body is otherwise identical to the v0.20.0 refactor.
+OLD_V0_21_0 = '''def run_nvfp4_emulations(
+    x: torch.Tensor,
+    input_global_scale: torch.Tensor,
+    weight: torch.Tensor,
+    weight_scale_swizzled: torch.Tensor,
+    weight_global_scale: torch.Tensor,
+    swizzle: bool | None = True,
+):
+    output_dtype = x.dtype
+    group_size = 16
+
+    x_dq = ref_nvfp4_quant_dequant(x, input_global_scale, block_size=group_size)
+
+    # dequantize weight
+    w_fp4 = weight.data.view(torch.uint8)
+    w_dq = dequantize_to_dtype(
+        w_fp4,
+        weight_scale_swizzled.data,
+        weight_global_scale,
+        output_dtype,
+        group_size,
+        swizzle=swizzle,
+    )
+
+    # matmul
+    out = torch.matmul(x_dq, w_dq.t())
+    return out'''
+
 NEW_V0_20_0 = '''def run_nvfp4_emulations(
     x: torch.Tensor,
     input_global_scale: torch.Tensor,
@@ -190,6 +222,11 @@ PATCH_SENTINEL = "# Bug 1: Weight scales are LINEAR (not swizzled) in EMULATION 
 
 if PATCH_SENTINEL in content:
     print("Already patched (sentinel present)")
+elif OLD_V0_21_0 in content:
+    content = content.replace(OLD_V0_21_0, NEW_V0_20_0)
+    with open(path, 'w') as f:
+        f.write(content)
+    print("Fix applied to v0.21.0 signature: EMULATION backend weight dequantization")
 elif OLD_V0_20_0_REFACTOR in content:
     content = content.replace(OLD_V0_20_0_REFACTOR, NEW_V0_20_0)
     with open(path, 'w') as f:
@@ -211,7 +248,7 @@ elif OLD_V0_19_1 in content:
         f.write(content)
     print("Fix applied to v0.19.x signature: EMULATION backend weight dequantization")
 else:
-    print("ERROR: Could not find run_nvfp4_emulations in any known form (v0.19.1, v0.20.0, v0.20.0-refactor)")
+    print("ERROR: Could not find run_nvfp4_emulations in any known form (v0.19.1, v0.20.0, v0.20.0-refactor, v0.21.0)")
     idx = content.find('def run_nvfp4_emulations')
     if idx >= 0:
         print("Current code starts with:")
